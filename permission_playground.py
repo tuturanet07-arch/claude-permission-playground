@@ -65,10 +65,17 @@ def _webfetch_match(spec: str, url: str) -> bool:
     if not pattern or not hostname:
         return False
     # A leading *. deliberately excludes the apex domain; bare * covers all.
+    if pattern == "*":
+        return True
     if pattern.startswith("*."):
         suffix = pattern[1:]
         return hostname.endswith(suffix) and hostname != pattern[2:]
-    return fnmatch.fnmatchcase(hostname, pattern)
+    pattern_labels = pattern.split(".")
+    hostname_labels = hostname.split(".")
+    return len(pattern_labels) == len(hostname_labels) and all(
+        fnmatch.fnmatchcase(host_label, pattern_label)
+        for pattern_label, host_label in zip(pattern_labels, hostname_labels)
+    )
 
 
 def matches(rule: str, tool: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
@@ -122,14 +129,16 @@ def explain(settings: dict[str, Any], tool: str, tool_input: dict[str, Any]) -> 
         "winning_rule": winner["rule"] if winner else None,
         "precedence_note": "Deny rules are checked before ask rules, then allow rules."
     }
-    broad_allow_rules = [
-        item["rule"] for item in evaluated
-        if item["group"] == "allow" and item["matched"] and (
-            item["rule"] == "Bash"
-            or item["rule"] == "Bash(*)"
-            or item["rule"] == "WebFetch(domain:*)"
-        )
-    ]
+    broad_allow_rules = []
+    for item in evaluated:
+        rule = item["rule"]
+        is_broad = rule == tool
+        if tool == "Bash" and rule == "Bash(*)":
+            is_broad = True
+        if tool == "WebFetch" and rule == "WebFetch(domain:*)":
+            is_broad = True
+        if item["group"] == "allow" and item["matched"] and is_broad:
+            broad_allow_rules.append(rule)
     if broad_allow_rules:
         summary["warnings"] = [
             "A broad allow rule matched this call; review its scope before relying on it."
