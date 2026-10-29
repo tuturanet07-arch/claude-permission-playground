@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push *)"
+    ],
+    "ask": [
+      "Bash(git clean *)"
+    ],
+    "allow": [
+      "Bash(git status)",
+      "Bash(git *)"
+    ]
+  }
+}

@@ -14,6 +14,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 def _tool_match(pattern: str, tool: str) -> bool:
@@ -32,14 +33,20 @@ def _input_spec(pattern: str) -> str | None:
 
 
 def _bash_match(spec: str, command: str) -> bool:
-    """Approximate documented Bash-prefix matching; wildcard matches spaces."""
+    """Approximate Claude Code's documented whole-command wildcard matching."""
     spec = spec.strip()
     if spec.endswith(":*"):
         spec = spec[:-2] + " *"
+    if spec == "*":
+        return True
     if "*" not in spec:
         return command.strip() == spec
-    prefix, suffix = spec.split("*", 1)
-    return command.startswith(prefix) and command.endswith(suffix)
+    # A trailing " *" also covers the bare prefix (for example, "ls *"
+    # matches both "ls" and "ls -la"). Other wildcard placements use glob
+    # matching, so multiple asterisks work as expected.
+    if spec.endswith(" *") and spec.count("*") == 1 and command.strip() == spec[:-2]:
+        return True
+    return fnmatch.fnmatchcase(command, spec)
 
 
 def _path_match(spec: str, target: str) -> bool:
@@ -47,6 +54,21 @@ def _path_match(spec: str, target: str) -> bool:
     spec = spec.replace("\\", "/")
     target = target.replace("\\", "/")
     return fnmatch.fnmatchcase(target, spec)
+
+
+def _webfetch_match(spec: str, url: str) -> bool:
+    """Match the documented WebFetch domain specifier subset."""
+    if not spec.startswith("domain:"):
+        return False
+    pattern = spec[len("domain:"):].strip().lower().rstrip(".")
+    hostname = (urlsplit(url).hostname or "").lower().rstrip(".")
+    if not pattern or not hostname:
+        return False
+    # A leading *. deliberately excludes the apex domain; bare * covers all.
+    if pattern.startswith("*."):
+        suffix = pattern[1:]
+        return hostname.endswith(suffix) and hostname != pattern[2:]
+    return fnmatch.fnmatchcase(hostname, pattern)
 
 
 def matches(rule: str, tool: str, tool_input: dict[str, Any]) -> tuple[bool, str]:
@@ -62,7 +84,11 @@ def matches(rule: str, tool: str, tool_input: dict[str, Any]) -> tuple[bool, str
         command = str(tool_input.get("command", ""))
         result = _bash_match(spec, command)
         return result, "Bash command matches" if result else "Bash command differs"
-    field = "file_path" if tool in {"Read", "Edit", "Write", "NotebookEdit"} else "url" if tool == "WebFetch" else None
+    if tool == "WebFetch":
+        value = str(tool_input.get("url", ""))
+        result = _webfetch_match(spec, value)
+        return result, "WebFetch hostname matches" if result else "WebFetch hostname differs or rule is unsupported"
+    field = "file_path" if tool in {"Read", "Edit", "Write", "NotebookEdit"} else None
     if field:
         value = str(tool_input.get(field, ""))
         result = _path_match(spec, value)
@@ -96,6 +122,19 @@ def explain(settings: dict[str, Any], tool: str, tool_input: dict[str, Any]) -> 
         "winning_rule": winner["rule"] if winner else None,
         "precedence_note": "Deny rules are checked before ask rules, then allow rules."
     }
+    broad_allow_rules = [
+        item["rule"] for item in evaluated
+        if item["group"] == "allow" and item["matched"] and (
+            item["rule"] == "Bash"
+            or item["rule"] == "Bash(*)"
+            or item["rule"] == "WebFetch(domain:*)"
+        )
+    ]
+    if broad_allow_rules:
+        summary["warnings"] = [
+            "A broad allow rule matched this call; review its scope before relying on it."
+        ]
+        summary["broad_allow_rules"] = broad_allow_rules
     if winner is None:
         if mode == "bypassPermissions":
             summary["mode_effect"] = "permission prompts are skipped in this mode"
