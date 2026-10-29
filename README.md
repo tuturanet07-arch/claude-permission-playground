@@ -33,7 +33,7 @@ The result is JSON with each configured rule, whether it matched, why it matched
 Try the included example settings file:
 
 ```bash
-python3 permission_playground.py examples/settings.json \
+python3 permission_playground.py settings.json \
   --tool Bash \
   --input '{"command":"git push origin main"}'
 ```
